@@ -24,7 +24,7 @@ import json
 default_args = {
     "owner": "data-platform",
     "depends_on_past": False,
-    "email_on_failure": True,
+    "email_on_failure": False,
     "email_on_retry": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
@@ -45,21 +45,17 @@ EXIT_CODES = {
 
 RECOVERABLE_CODES = {2, 5, 7}
 
+# Network where databases are running
+DATABASE_NETWORK = "mssql-to-postgres-pipeline_airflow"
+
 
 def check_health_result(**context):
     """Branch based on health check result."""
     ti = context["ti"]
     health_output = ti.xcom_pull(task_ids="health_check")
 
-    if health_output:
-        try:
-            # Parse JSON output from health check
-            result = json.loads(health_output)
-            if result.get("healthy", False):
-                return "run_migration"
-        except json.JSONDecodeError:
-            pass
-
+    if health_output and "HEALTHY" in health_output:
+        return "run_migration"
     return "health_check_failed"
 
 
@@ -89,9 +85,9 @@ with DAG(
     catchup=False,
     tags=["migration", "mssql", "postgres"],
     params={
-        "config_file": "example-migration.yaml",
+        "config_file": "test-migration.yaml",
         "dry_run": False,
-        "workers": 8,
+        "workers": 4,
     },
     doc_md=__doc__,
 ) as dag:
@@ -101,22 +97,19 @@ with DAG(
         task_id="health_check",
         image="mssql-pg-migrate:1.24.0",
         command=[
+            "--config", "/config/{{ params.config_file }}",
             "health-check",
-            "--output-json",
         ],
         mounts=[
             Mount(
-                source="/opt/airflow/configs",
+                source="/home/johnd/repos/mssql-pg-migrate-airflow/configs",
                 target="/config",
                 type="bind",
                 read_only=True,
             ),
         ],
-        environment={
-            "CONFIG_FILE": "/config/{{ params.config_file }}",
-        },
         docker_url="unix://var/run/docker.sock",
-        network_mode="airflow-network",
+        network_mode=DATABASE_NETWORK,
         auto_remove="success",
         do_xcom_push=True,
         mount_tmp_dir=False,
@@ -141,31 +134,19 @@ with DAG(
             "--config", "/config/{{ params.config_file }}",
             "--progress",
             "--progress-interval", "5s",
-            "--output-json",
             "run",
-            "--workers", "{{ params.workers }}",
             "{% if params.dry_run %}--dry-run{% endif %}",
         ],
         mounts=[
             Mount(
-                source="/opt/airflow/configs",
+                source="/home/johnd/repos/mssql-pg-migrate-airflow/configs",
                 target="/config",
                 type="bind",
                 read_only=True,
             ),
-            Mount(
-                source="/opt/airflow/logs/migration-state",
-                target="/state",
-                type="bind",
-            ),
         ],
-        environment={
-            # Pass database credentials via environment variables
-            "MSSQL_PASSWORD": "{{ var.value.mssql_password }}",
-            "PG_PASSWORD": "{{ var.value.pg_password }}",
-        },
         docker_url="unix://var/run/docker.sock",
-        network_mode="airflow-network",
+        network_mode=DATABASE_NETWORK,
         auto_remove="success",
         do_xcom_push=True,
         mount_tmp_dir=False,
@@ -201,7 +182,7 @@ with DAG(
     catchup=False,
     tags=["migration", "mssql", "postgres", "resume"],
     params={
-        "config_file": "example-migration.yaml",
+        "config_file": "test-migration.yaml",
     },
 ) as resume_dag:
 
@@ -212,28 +193,18 @@ with DAG(
             "--config", "/config/{{ params.config_file }}",
             "--progress",
             "--progress-interval", "5s",
-            "--output-json",
             "resume",
         ],
         mounts=[
             Mount(
-                source="/opt/airflow/configs",
+                source="/home/johnd/repos/mssql-pg-migrate-airflow/configs",
                 target="/config",
                 type="bind",
                 read_only=True,
             ),
-            Mount(
-                source="/opt/airflow/logs/migration-state",
-                target="/state",
-                type="bind",
-            ),
         ],
-        environment={
-            "MSSQL_PASSWORD": "{{ var.value.mssql_password }}",
-            "PG_PASSWORD": "{{ var.value.pg_password }}",
-        },
         docker_url="unix://var/run/docker.sock",
-        network_mode="airflow-network",
+        network_mode=DATABASE_NETWORK,
         auto_remove="success",
         do_xcom_push=True,
         mount_tmp_dir=False,

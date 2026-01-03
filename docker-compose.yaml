@@ -18,6 +18,8 @@ x-airflow-common: &airflow-common
     - ./logs:/opt/airflow/logs
     - /var/run/docker.sock:/var/run/docker.sock
   user: "${AIRFLOW_UID:-50000}:0"
+  group_add:
+    - "1001"  # docker group
   depends_on: &airflow-common-depends-on
     postgres:
       condition: service_healthy
