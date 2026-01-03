@@ -1,0 +1,58 @@
+# Example migration configuration
+# Copy this file and customize for your environment
+
+source:
+  type: mssql
+  host: ${MSSQL_HOST:-mssql-server}
+  port: 1433
+  database: ${MSSQL_DATABASE:-SourceDB}
+  user: ${MSSQL_USER:-sa}
+  password: ${MSSQL_PASSWORD}
+  schema: dbo
+  trust_server_cert: true
+
+target:
+  type: postgres
+  host: ${PG_HOST:-postgres-target}
+  port: 5432
+  database: ${PG_DATABASE:-target_db}
+  user: ${PG_USER:-postgres}
+  password: ${PG_PASSWORD}
+  schema: public
+  ssl_mode: disable
+
+migration:
+  # Parallel workers (adjust based on available resources)
+  workers: 8
+
+  # Rows per chunk for streaming
+  chunk_size: 100000
+
+  # Connection pool sizes
+  max_mssql_connections: 16
+  max_pg_connections: 16
+
+  # Target mode: drop_recreate, truncate, or upsert
+  target_mode: drop_recreate
+
+  # Table filters (optional)
+  include_tables: []
+  exclude_tables:
+    - __*
+    - temp_*
+    - sys*
+
+  # State directory for checkpointing (mounted volume)
+  data_dir: /state
+
+  # Performance tuning
+  read_ahead_buffers: 4
+  write_ahead_writers: 2
+
+  # Validation
+  strict_consistency: false
+
+# Slack notifications (optional)
+slack:
+  enabled: false
+  webhook_url: ""
