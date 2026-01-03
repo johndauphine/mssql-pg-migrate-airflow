@@ -34,9 +34,12 @@ EXIT_CODES = {
     5: "Cancelled (recoverable)",
     6: "State error (non-recoverable)",
     7: "I/O error (recoverable)",
+    # Docker/system signals (128 + signal number)
+    137: "SIGKILL - container killed (recoverable)",
+    143: "SIGTERM - container stopped (recoverable)",
 }
 
-RECOVERABLE_CODES = {2, 5, 7}
+RECOVERABLE_CODES = {2, 5, 7, 137, 143}
 
 # Network where databases are running
 DATABASE_NETWORK = os.getenv("DATABASE_NETWORK", "mssql-to-postgres-pipeline_airflow")
@@ -261,4 +264,5 @@ with DAG(
 
     # Define task dependencies
     health_check >> check_health >> [run_migration, health_failed]
-    run_migration >> parse_results >> migration_complete
+    run_migration >> parse_results
+    [run_migration, parse_results] >> migration_complete
