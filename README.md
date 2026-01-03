@@ -6,8 +6,8 @@ Airflow DAGs for orchestrating database migrations between MSSQL and PostgreSQL 
 
 - **DockerOperator Integration**: Run migrations in isolated containers
 - **Health Checks**: Verify database connectivity before migration
+- **Automatic Retry with Resume**: Failed migrations automatically retry using checkpoint resume
 - **Progress Streaming**: Real-time JSON progress updates in Airflow logs
-- **Checkpointing**: Resume interrupted migrations from last checkpoint
 - **Exit Code Handling**: Proper task status based on migration exit codes
 
 ## Quick Start
@@ -69,11 +69,9 @@ In the Airflow UI:
    - `dry_run`: `true` (for testing)
    - `workers`: `8`
 
-## DAGs
+## DAG: mssql_pg_migration
 
-### mssql_pg_migration
-
-Main migration DAG with the following flow:
+Main migration DAG with automatic retry/resume:
 
 ```
 health_check → check_health → run_migration → parse_results → migration_complete
@@ -81,25 +79,23 @@ health_check → check_health → run_migration → parse_results → migration_
               health_check_failed
 ```
 
-**Parameters:**
+### Retry Behavior
+
+- **First attempt**: Runs `mssql-pg-migrate run` command
+- **Retry attempts**: Automatically uses `mssql-pg-migrate resume` to continue from last checkpoint
+- **Retries**: 3 attempts with exponential backoff (2min → 4min → 8min)
+
+### Parameters
+
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `config_file` | `example-migration.yaml` | Config file in `/configs` |
+| `config_file` | `test-migration.yaml` | Config file in `/configs` |
 | `dry_run` | `false` | Preview migration without executing |
-| `workers` | `8` | Number of parallel workers |
-
-### mssql_pg_migration_resume
-
-Resume a failed or interrupted migration from the last checkpoint.
-
-**Parameters:**
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `config_file` | `example-migration.yaml` | Config file to resume |
+| `workers` | `4` | Number of parallel workers |
 
 ## Exit Codes
 
-The migration tool uses standardized exit codes for proper Airflow task status:
+The migration tool uses standardized exit codes:
 
 | Code | Status | Recoverable | Description |
 |------|--------|-------------|-------------|
@@ -133,18 +129,28 @@ The `--progress` flag streams JSON updates to stderr, visible in Airflow logs:
 ```
 mssql-pg-migrate-airflow/
 ├── dags/
-│   └── migration_dag.py      # Airflow DAG definitions
+│   └── migration_dag.py      # Airflow DAG definition
 ├── docker/
 │   └── mssql-pg-migrate/
 │       └── Dockerfile        # Migration tool image
 ├── configs/
 │   └── example-migration.yaml
+├── state/                    # Migration checkpoints (for resume)
 ├── logs/                     # Airflow logs (auto-created)
-│   └── migration-state/      # Migration checkpoints
 ├── docker-compose.yaml
 ├── .env.example
 └── README.md
 ```
+
+## Environment Variables
+
+Configure paths for different hosts via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_NETWORK` | `mssql-to-postgres-pipeline_airflow` | Docker network for database access |
+| `CONFIG_MOUNT_PATH` | `/Users/john/repos/mssql-pg-migrate-airflow/configs` | Host path to config files |
+| `STATE_MOUNT_PATH` | `/Users/john/repos/mssql-pg-migrate-airflow/state` | Host path for checkpoint state |
 
 ## Customization
 
@@ -201,10 +207,10 @@ sudo usermod -aG docker $USER
 
 ### Migration state not persisting
 
-Ensure the state volume exists:
+Ensure the state directory exists:
 
 ```bash
-mkdir -p logs/migration-state
+mkdir -p state
 ```
 
 ### Health check fails

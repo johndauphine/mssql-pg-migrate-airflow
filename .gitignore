@@ -3,6 +3,7 @@
 
 # Airflow
 logs/
+state/
 airflow.db
 airflow-webserver.pid
 
