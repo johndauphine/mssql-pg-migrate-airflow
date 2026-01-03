@@ -16,10 +16,12 @@ from airflow import DAG
 from airflow.providers.docker.operators.docker import DockerOperator
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.operators.empty import EmptyOperator
-from airflow.exceptions import AirflowException
+from airflow.exceptions import AirflowException, AirflowFailException
+from airflow.providers.docker.exceptions import DockerContainerFailedException
 from docker.types import Mount
 import json
 import os
+import re
 
 
 # mssql-pg-migrate exit codes
@@ -93,6 +95,9 @@ class MigrationDockerOperator(DockerOperator):
 
     On first attempt (try_number=1): runs 'run' command
     On retry attempts (try_number>1): runs 'resume' command to continue from checkpoint
+
+    Only retries on recoverable exit codes (2=connection, 5=cancelled, 7=I/O).
+    Non-recoverable errors (1=config, 3=transfer, 4=validation, 6=state) fail immediately.
     """
 
     def execute(self, context):
@@ -113,7 +118,40 @@ class MigrationDockerOperator(DockerOperator):
         else:
             self.log.info("First attempt - using 'run' command")
 
-        return super().execute(context)
+        try:
+            return super().execute(context)
+        except DockerContainerFailedException as e:
+            # Extract exit code from exception
+            exit_code = None
+            if hasattr(e, 'result') and isinstance(e.result, dict):
+                exit_code = e.result.get('StatusCode')
+            elif 'StatusCode' in str(e):
+                # Parse from error message: "Docker container failed: {'StatusCode': 4}"
+                match = re.search(r"'StatusCode':\s*(\d+)", str(e))
+                if match:
+                    exit_code = int(match.group(1))
+
+            if exit_code is not None:
+                exit_desc = EXIT_CODES.get(exit_code, f"Unknown exit code {exit_code}")
+
+                if exit_code in RECOVERABLE_CODES:
+                    self.log.warning(
+                        f"Migration failed with recoverable exit code {exit_code}: {exit_desc}. "
+                        "Task will be retried with 'resume' command."
+                    )
+                    raise  # Re-raise for retry
+                else:
+                    self.log.error(
+                        f"Migration failed with non-recoverable exit code {exit_code}: {exit_desc}. "
+                        "Task will NOT be retried."
+                    )
+                    # Raise AirflowFailException to fail without retry
+                    raise AirflowFailException(
+                        f"Migration failed with non-recoverable error: {exit_desc}"
+                    ) from e
+
+            # If we couldn't determine exit code, re-raise for default behavior
+            raise
 
 
 with DAG(
@@ -146,6 +184,11 @@ with DAG(
                 target="/config",
                 type="bind",
                 read_only=True,
+            ),
+            Mount(
+                source=STATE_MOUNT_PATH,
+                target="/state",
+                type="bind",
             ),
         ],
         docker_url="unix://var/run/docker.sock",

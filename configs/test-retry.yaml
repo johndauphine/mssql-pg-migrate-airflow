@@ -1,0 +1,34 @@
+# Test retry behavior with larger dataset
+# Uses full StackOverflow2010 for longer-running migration
+
+source:
+  type: mssql
+  host: mssql-server
+  port: 1433
+  database: StackOverflow2010
+  user: sa
+  password: YourStrong@Passw0rd
+  schema: dbo
+  trust_server_cert: true
+
+target:
+  type: postgres
+  host: postgres-target
+  port: 5432
+  database: so2010
+  user: postgres
+  password: PostgresPassword123
+  schema: public
+  ssl_mode: disable
+
+migration:
+  workers: 2
+  chunk_size: 25000
+  target_mode: drop_recreate
+  # Include larger tables to make migration take longer
+  include_tables:
+    - Badges
+    - Users
+    - Posts
+    - Comments
+  data_dir: /state
