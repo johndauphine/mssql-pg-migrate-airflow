@@ -1,0 +1,31 @@
+# Local test config - for running Go app directly on host
+# Uses localhost addresses instead of Docker network hostnames
+
+source:
+  type: mssql
+  host: localhost
+  port: 1433
+  database: StackOverflow2010
+  user: sa
+  password: ${MSSQL_PASSWORD}
+  schema: dbo
+  trust_server_cert: true
+
+target:
+  type: postgres
+  host: localhost
+  port: 5433
+  database: so2010
+  user: postgres
+  password: ${PG_PASSWORD}
+  schema: public
+  ssl_mode: disable
+
+migration:
+  workers: 4
+  chunk_size: 50000
+  target_mode: drop_recreate
+  include_tables:
+    - Badges
+    - Users
+  data_dir: ./state
