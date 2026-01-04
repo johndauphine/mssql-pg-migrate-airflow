@@ -82,8 +82,11 @@ def send_slack_notification(status: str, config_file: str, dag_id: str = "mssql_
     if status == "SUCCESS" and details:
         tables = details.get("tables", 0)
         rows = details.get("rows", 0)
-        speed = details.get("speed", 0)
-        summary = f"Migration pipeline completed successfully. Migrated {tables} tables with {rows:,} total rows. Throughput: {speed:,} rows/sec."
+        speed = details.get("speed")
+        if speed:
+            summary = f"Migration pipeline completed successfully. Migrated {tables} tables with {rows:,} total rows. Throughput: {speed:,} rows/sec."
+        else:
+            summary = f"Migration pipeline completed successfully. Migrated {tables} tables with {rows:,} total rows."
     elif status == "FAILED":
         summary = f"Migration pipeline failed. {error or 'Unknown error'}"
     elif status == "RETRYING":
@@ -153,7 +156,9 @@ def parse_migration_output(output: str) -> dict:
     if not output:
         return details
 
-    # Look for the final completion line
+    table_count = 0
+    total_rows = 0
+
     for line in output.split("\n"):
         # "Migration complete: 2 tables, 1401431 rows in 2s (785105 rows/sec)"
         match = re.search(r"Migration complete: (\d+) tables?, ([\d,]+) rows? in ([^\(]+) \((\d+) rows/sec\)", line)
@@ -162,9 +167,16 @@ def parse_migration_output(output: str) -> dict:
             details["rows"] = int(match.group(2).replace(",", ""))
             details["duration"] = match.group(3).strip()
             details["speed"] = int(match.group(4))
-            break
+            return details  # Found complete summary, return immediately
 
-        # Also check JSON progress for completed status
+        # Parse individual table completion lines (for resume output)
+        # "Badges                         OK 1102023 rows"
+        table_match = re.search(r"\[INFO\]\s+(\w+)\s+OK\s+([\d,]+)\s+rows", line)
+        if table_match:
+            table_count += 1
+            total_rows += int(table_match.group(2).replace(",", ""))
+
+        # Check JSON progress for completed status
         if line.startswith("{"):
             try:
                 progress = json.loads(line)
@@ -172,8 +184,14 @@ def parse_migration_output(output: str) -> dict:
                     details["tables"] = progress.get("tables_complete", 0)
                     details["rows"] = progress.get("rows_transferred", 0)
                     details["speed"] = progress.get("rows_per_second", 0)
+                    return details
             except json.JSONDecodeError:
                 pass
+
+    # If we parsed individual tables but no summary line (resume case)
+    if table_count > 0:
+        details["tables"] = table_count
+        details["rows"] = total_rows
 
     return details
 
@@ -199,24 +217,67 @@ def on_migration_success(context):
     )
 
 
+def extract_error_message(exception) -> str:
+    """Extract meaningful error message from exception chain."""
+    if not exception:
+        return "Task failed"
+
+    error_msg = str(exception)
+
+    # Check the exception chain for StatusCode (Docker exit code)
+    exc = exception
+    while exc:
+        exc_str = str(exc)
+        match = re.search(r"StatusCode['\"]?:\s*(\d+)", exc_str)
+        if match:
+            exit_code = int(match.group(1))
+            exit_desc = EXIT_CODES.get(exit_code, f"Exit code {exit_code}")
+            return f"{exit_desc} (exit code {exit_code})"
+        exc = getattr(exc, "__cause__", None)
+
+    # If no StatusCode found, use the main exception message
+    # Check if it's already a descriptive error from AirflowFailException
+    if "non-recoverable error:" in error_msg:
+        # Extract the error description after the colon
+        parts = error_msg.split("non-recoverable error:")
+        if len(parts) > 1:
+            return parts[1].strip()
+
+    return error_msg or "Task failed"
+
+
+def get_exception_from_context(context) -> str:
+    """Get exception message from Airflow context, handling Airflow 3 differences."""
+    # Try to get error from XCom (pushed by MigrationDockerOperator)
+    ti = context.get("ti")
+    if ti:
+        try:
+            xcom_error = ti.xcom_pull(key="migration_error", task_ids="run_migration")
+            if xcom_error:
+                return xcom_error
+        except Exception:
+            pass
+
+    # Try standard exception key
+    exception = context.get("exception")
+    if exception:
+        return extract_error_message(exception)
+
+    # Try reason key (used in some callbacks)
+    reason = context.get("reason")
+    if reason:
+        return str(reason)
+
+    return "Task failed (no exception details available)"
+
+
 def on_migration_failure(context):
     """Callback for failed migration."""
     ti = context["ti"]
     dag_run = context["dag_run"]
     config_file = context["params"].get("config_file", "unknown")
-    exception = context.get("exception")
 
-    # Build detailed error message
-    if exception:
-        error_msg = str(exception)
-        # Check for exit code in the exception
-        match = re.search(r"StatusCode['\"]?:\s*(\d+)", error_msg)
-        if match:
-            exit_code = int(match.group(1))
-            exit_desc = EXIT_CODES.get(exit_code, f"Exit code {exit_code}")
-            error_msg = f"{exit_desc} (exit code {exit_code})"
-    else:
-        error_msg = "Task failed"
+    error_msg = get_exception_from_context(context)
 
     # Get timing info
     start_time = ti.start_date.strftime("%Y-%m-%d %H:%M:%S UTC") if ti.start_date else None
@@ -240,19 +301,8 @@ def on_migration_retry(context):
     ti = context["ti"]
     dag_run = context["dag_run"]
     config_file = context["params"].get("config_file", "unknown")
-    exception = context.get("exception")
 
-    # Build detailed error message
-    if exception:
-        error_msg = str(exception)
-        # Check for exit code in the exception
-        match = re.search(r"StatusCode['\"]?:\s*(\d+)", error_msg)
-        if match:
-            exit_code = int(match.group(1))
-            exit_desc = EXIT_CODES.get(exit_code, f"Exit code {exit_code}")
-            error_msg = f"{exit_desc} (exit code {exit_code})"
-    else:
-        error_msg = "Task interrupted"
+    error_msg = get_exception_from_context(context)
 
     # Get timing info
     start_time = ti.start_date.strftime("%Y-%m-%d %H:%M:%S UTC") if ti.start_date else None
@@ -360,6 +410,10 @@ class MigrationDockerOperator(DockerOperator):
 
             if exit_code is not None:
                 exit_desc = EXIT_CODES.get(exit_code, f"Unknown exit code {exit_code}")
+                error_msg = f"{exit_desc} (exit code {exit_code})"
+
+                # Push error to XCom for callback to retrieve
+                ti.xcom_push(key="migration_error", value=error_msg)
 
                 if exit_code in RECOVERABLE_CODES:
                     self.log.warning(
@@ -377,6 +431,8 @@ class MigrationDockerOperator(DockerOperator):
                         f"Migration failed with non-recoverable error: {exit_desc}"
                     ) from e
 
+            # Push generic error to XCom
+            ti.xcom_push(key="migration_error", value=f"Docker container failed: {str(e)}")
             # If we couldn't determine exit code, re-raise for default behavior
             raise
 

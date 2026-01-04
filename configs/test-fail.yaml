@@ -1,0 +1,30 @@
+# Test failure notifications - valid connection, non-existent table
+# Health check will pass, migration will fail (exit code 3 - non-recoverable)
+
+source:
+  type: mssql
+  host: mssql-server
+  port: 1433
+  database: StackOverflow2010
+  user: sa
+  password: ${MSSQL_PASSWORD}
+  schema: dbo
+  trust_server_cert: true
+
+target:
+  type: postgres
+  host: postgres-target
+  port: 5432
+  database: so2010
+  user: postgres
+  password: ${PG_PASSWORD}
+  schema: public
+  ssl_mode: disable
+
+migration:
+  workers: 2
+  chunk_size: 10000
+  target_mode: drop_recreate
+  include_tables:
+    - NonExistentTableXYZ
+  data_dir: /state
