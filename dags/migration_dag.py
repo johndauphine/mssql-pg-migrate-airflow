@@ -53,6 +53,12 @@ CONFIG_MOUNT_PATH = os.getenv("CONFIG_MOUNT_PATH", "/Users/john/repos/mssql-pg-m
 # State directory for checkpoints (must be shared between retries)
 STATE_MOUNT_PATH = os.getenv("STATE_MOUNT_PATH", "/Users/john/repos/mssql-pg-migrate-airflow/state")
 
+# Database credentials (passed to mssql-pg-migrate container for config file substitution)
+DB_ENV_VARS = {
+    "MSSQL_PASSWORD": os.getenv("MSSQL_PASSWORD", ""),
+    "PG_PASSWORD": os.getenv("PG_PASSWORD", ""),
+}
+
 
 # Default arguments for all tasks
 default_args = {
@@ -197,6 +203,7 @@ with DAG(
                 type="bind",
             ),
         ],
+        environment=DB_ENV_VARS,
         docker_url="unix://var/run/docker.sock",
         network_mode=DATABASE_NETWORK,
         auto_remove="success",
@@ -241,6 +248,7 @@ with DAG(
             ),
         ],
         environment={
+            **DB_ENV_VARS,
             "DATA_DIR": "/state",  # Tell mssql-pg-migrate to use mounted state dir
         },
         docker_url="unix://var/run/docker.sock",

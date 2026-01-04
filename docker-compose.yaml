@@ -24,6 +24,9 @@ x-airflow-common: &airflow-common
     CONFIG_MOUNT_PATH: ${CONFIG_MOUNT_PATH:-/home/johnd/repos/mssql-pg-migrate-airflow/configs}
     STATE_MOUNT_PATH: ${STATE_MOUNT_PATH:-/home/johnd/repos/mssql-pg-migrate-airflow/state}
     DATABASE_NETWORK: ${DATABASE_NETWORK:-mssql-to-postgres-pipeline_airflow}
+    # Database credentials (passed to DockerOperator containers)
+    MSSQL_PASSWORD: ${MSSQL_PASSWORD}
+    PG_PASSWORD: ${PG_PASSWORD}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./configs:/opt/airflow/configs
