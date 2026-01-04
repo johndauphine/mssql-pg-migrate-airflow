@@ -134,6 +134,14 @@ def send_slack_notification(status: str, config_file: str, dag_id: str = "mssql_
     for i in range(0, len(fields), 2):
         blocks.append({"type": "section", "fields": fields[i:i+2]})
 
+    # Add table list for success notifications
+    if status == "SUCCESS" and details and "table_list" in details:
+        table_lines = [f"• {name}: {rows:,} rows" for name, rows in details["table_list"]]
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Tables Migrated:*\n" + "\n".join(table_lines)}
+        })
+
     # Add error block if present and not already in summary
     if error and status == "FAILED":
         blocks.append({
@@ -156,8 +164,7 @@ def parse_migration_output(output: str) -> dict:
     if not output:
         return details
 
-    table_count = 0
-    total_rows = 0
+    table_list = []  # List of (table_name, row_count) tuples
 
     for line in output.split("\n"):
         # Extract event content if line is JSON log format
@@ -171,10 +178,9 @@ def parse_migration_output(output: str) -> dict:
                     try:
                         progress = json.loads(event_content)
                         if progress.get("phase") == "completed":
-                            details["tables"] = progress.get("tables_complete", 0)
                             details["rows"] = progress.get("rows_transferred", 0)
                             details["speed"] = progress.get("rows_per_second", 0)
-                            return details
+                            # Don't return yet - continue to get table names
                     except json.JSONDecodeError:
                         pass
             except json.JSONDecodeError:
@@ -183,23 +189,24 @@ def parse_migration_output(output: str) -> dict:
         # "Migration complete: 2 tables, 1401431 rows in 2s (785105 rows/sec)"
         match = re.search(r"Migration complete: (\d+) tables?, ([\d,]+) rows? in ([^\(]+) \((\d+) rows/sec\)", event_content)
         if match:
-            details["tables"] = int(match.group(1))
+            details["tables"] = int(match.group(1))  # Capture table count from summary
             details["rows"] = int(match.group(2).replace(",", ""))
             details["duration"] = match.group(3).strip()
             details["speed"] = int(match.group(4))
-            return details  # Found complete summary, return immediately
+            # Don't return yet - continue to get table names if available
 
-        # Parse individual table completion lines (for resume output)
+        # Parse individual table completion lines
         # "[INFO] Badges                         OK 1102023 rows"
         table_match = re.search(r"\[INFO\]\s+(\w+)\s+OK\s+([\d,]+)\s+rows", event_content)
         if table_match:
-            table_count += 1
-            total_rows += int(table_match.group(2).replace(",", ""))
+            table_name = table_match.group(1)
+            row_count = int(table_match.group(2).replace(",", ""))
+            table_list.append((table_name, row_count))
 
-    # If we parsed individual tables but no summary line (resume case)
-    if table_count > 0:
-        details["tables"] = table_count
-        details["rows"] = total_rows
+    # Set table count and list
+    if table_list:
+        details["tables"] = len(table_list)
+        details["table_list"] = table_list
 
     return details
 
@@ -211,6 +218,19 @@ def on_migration_success(context):
     config_file = context["params"].get("config_file", "unknown")
     output = ti.xcom_pull(task_ids="run_migration")
     details = parse_migration_output(output)
+
+    # Try to get table list from log file (XCom only has last line)
+    if "table_list" not in details:
+        try:
+            log_dir = f"/opt/airflow/logs/dag_id={dag_run.dag_id}/run_id={dag_run.run_id}/task_id={ti.task_id}"
+            log_file = f"{log_dir}/attempt={ti.try_number}.log"
+            with open(log_file, "r") as f:
+                log_content = f.read()
+                log_details = parse_migration_output(log_content)
+                if "table_list" in log_details:
+                    details["table_list"] = log_details["table_list"]
+        except Exception:
+            pass  # Log file not accessible, continue without table list
 
     # Get timing info
     start_time = ti.start_date.strftime("%Y-%m-%d %H:%M:%S UTC") if ti.start_date else None
