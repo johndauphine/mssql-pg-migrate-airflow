@@ -9,13 +9,16 @@ Features:
 - Automatic retry with resume on failure
 - Streaming progress via --progress flag
 - Proper exit code handling for recoverable vs non-recoverable errors
+
+Airflow 3 compatible.
 """
 
 from datetime import datetime, timedelta
-from airflow import DAG
+from airflow.sdk import DAG
 from airflow.providers.docker.operators.docker import DockerOperator
-from airflow.operators.python import PythonOperator, BranchPythonOperator
-from airflow.operators.empty import EmptyOperator
+# Airflow 3: standard operators moved to providers-standard package
+from airflow.providers.standard.operators.python import PythonOperator, BranchPythonOperator
+from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.exceptions import AirflowException, AirflowFailException
 from airflow.providers.docker.exceptions import DockerContainerFailedException
 from docker.types import Mount
