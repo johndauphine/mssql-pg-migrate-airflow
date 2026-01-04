@@ -1,6 +1,4 @@
-# Test migration configuration for SO2010 dataset
-# Uses existing MSSQL and PostgreSQL containers
-
+# Larger migration to test interruption and resume
 source:
   type: mssql
   host: mssql-server
@@ -22,10 +20,10 @@ target:
   ssl_mode: disable
 
 migration:
-  workers: 4
-  chunk_size: 50000
+  workers: 2
+  chunk_size: 20000
   target_mode: drop_recreate
-  include_tables:
-    - Badges
-    - Users
+  # Include all tables for longer migration
+  include_tables: []
+  exclude_tables: []
   data_dir: /state

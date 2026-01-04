@@ -12,6 +12,10 @@ x-airflow-common: &airflow-common
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     # Enable DockerOperator to connect to host Docker
     AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES: airflow\..*
+    # Mount paths for DockerOperator (passed from .env)
+    CONFIG_MOUNT_PATH: ${CONFIG_MOUNT_PATH:-/home/johnd/repos/mssql-pg-migrate-airflow/configs}
+    STATE_MOUNT_PATH: ${STATE_MOUNT_PATH:-/home/johnd/repos/mssql-pg-migrate-airflow/state}
+    DATABASE_NETWORK: ${DATABASE_NETWORK:-mssql-to-postgres-pipeline_airflow}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./configs:/opt/airflow/configs

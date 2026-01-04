@@ -1,0 +1,35 @@
+# Test PostgreSQL to MSSQL migration (reverse direction)
+# Tests resume functionality with drop_recreate mode
+
+source:
+  type: postgres
+  host: postgres-target
+  port: 5432
+  database: so2010
+  user: postgres
+  password: PostgresPassword123
+  schema: public
+  ssl_mode: disable
+
+target:
+  type: mssql
+  host: mssql-server
+  port: 1433
+  database: StackOverflow2010_Copy
+  user: sa
+  password: YourStrong@Passw0rd
+  schema: dbo
+  encrypt: "true"
+  trust_server_cert: true
+
+migration:
+  workers: 2
+  chunk_size: 25000
+  target_mode: drop_recreate
+  write_ahead_writers: 8
+  include_tables:
+    - badges
+    - users
+    - posts
+    - comments
+  data_dir: /state
