@@ -64,56 +64,78 @@ DB_ENV_VARS = {
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
 
 
-def send_slack_notification(status: str, config_file: str, details: dict = None, error: str = None):
+def send_slack_notification(status: str, config_file: str, dag_id: str = "mssql_pg_migration",
+                           run_id: str = None, start_time: str = None, details: dict = None, error: str = None):
     """Send Slack notification with migration details."""
     if not SLACK_WEBHOOK_URL:
         return
 
-    # Status emoji and color
+    # Status emoji and titles
     status_config = {
-        "SUCCESS": {"emoji": ":large_green_circle:", "color": "#36a64f"},
-        "FAILED": {"emoji": ":red_circle:", "color": "#dc3545"},
-        "RETRYING": {"emoji": ":large_yellow_circle:", "color": "#ffc107"},
+        "SUCCESS": {"emoji": ":white_check_mark:", "title": "DAG Success"},
+        "FAILED": {"emoji": ":x:", "title": "DAG Failed"},
+        "RETRYING": {"emoji": ":warning:", "title": "DAG Retrying"},
     }
-    cfg = status_config.get(status, {"emoji": ":white_circle:", "color": "#6c757d"})
+    cfg = status_config.get(status, {"emoji": ":white_circle:", "title": f"DAG {status}"})
+
+    # Build summary text
+    if status == "SUCCESS" and details:
+        tables = details.get("tables", 0)
+        rows = details.get("rows", 0)
+        speed = details.get("speed", 0)
+        summary = f"Migration pipeline completed successfully. Migrated {tables} tables with {rows:,} total rows. Throughput: {speed:,} rows/sec."
+    elif status == "FAILED":
+        summary = f"Migration pipeline failed. {error or 'Unknown error'}"
+    elif status == "RETRYING":
+        attempt = details.get("attempt", "1/4") if details else "1/4"
+        summary = f"Migration pipeline retrying. Attempt {attempt}. Reason: {error or 'Unknown'}"
+    else:
+        summary = f"Migration status: {status}"
 
     # Build message blocks
     blocks = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": f"{cfg['emoji']} Migration {status}", "emoji": True}
+            "text": {"type": "plain_text", "text": f"{cfg['emoji']} {cfg['title']}: {dag_id}", "emoji": True}
         },
         {
             "type": "section",
-            "fields": [
-                {"type": "mrkdwn", "text": f"*Config:*\n{config_file}"},
-            ]
+            "text": {"type": "mrkdwn", "text": summary}
         }
     ]
 
-    # Add details for success
-    if details:
-        fields = []
-        if "tables" in details:
-            fields.append({"type": "mrkdwn", "text": f"*Tables:*\n{details['tables']}"})
-        if "rows" in details:
-            fields.append({"type": "mrkdwn", "text": f"*Rows:*\n{details['rows']:,}"})
-        if "duration" in details:
-            fields.append({"type": "mrkdwn", "text": f"*Duration:*\n{details['duration']}"})
-        if "speed" in details:
-            fields.append({"type": "mrkdwn", "text": f"*Speed:*\n{details['speed']:,} rows/sec"})
-        if "attempt" in details:
-            fields.append({"type": "mrkdwn", "text": f"*Attempt:*\n{details['attempt']}"})
-        if "next_retry" in details:
-            fields.append({"type": "mrkdwn", "text": f"*Next Retry:*\n{details['next_retry']}"})
-        if fields:
-            blocks.append({"type": "section", "fields": fields})
+    # Build fields grid
+    fields = [
+        {"type": "mrkdwn", "text": f"*DAG*\n{dag_id}"},
+        {"type": "mrkdwn", "text": f"*Run ID*\n{run_id or 'N/A'}"},
+    ]
 
-    # Add error message
-    if error:
+    if start_time:
+        fields.append({"type": "mrkdwn", "text": f"*Started*\n{start_time}"})
+    if details and "duration" in details:
+        fields.append({"type": "mrkdwn", "text": f"*Duration*\n{details['duration']}"})
+
+    if details:
+        if "tables" in details:
+            fields.append({"type": "mrkdwn", "text": f"*Tables*\n{details['tables']}"})
+        if "rows" in details:
+            fields.append({"type": "mrkdwn", "text": f"*Total Rows*\n{details['rows']:,}"})
+        if "speed" in details:
+            fields.append({"type": "mrkdwn", "text": f"*Throughput*\n{details['speed']:,} rows/sec"})
+        if "attempt" in details:
+            fields.append({"type": "mrkdwn", "text": f"*Attempt*\n{details['attempt']}"})
+        if "next_retry" in details:
+            fields.append({"type": "mrkdwn", "text": f"*Next Retry*\n{details['next_retry']}"})
+
+    # Add fields in groups of 2 (Slack limit per section)
+    for i in range(0, len(fields), 2):
+        blocks.append({"type": "section", "fields": fields[i:i+2]})
+
+    # Add error block if present and not already in summary
+    if error and status == "FAILED":
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Error:*\n```{error}```"}
+            "text": {"type": "mrkdwn", "text": f"*Error Details:*\n```{error}```"}
         })
 
     payload = {"blocks": blocks}
@@ -159,31 +181,82 @@ def parse_migration_output(output: str) -> dict:
 def on_migration_success(context):
     """Callback for successful migration."""
     ti = context["ti"]
+    dag_run = context["dag_run"]
     config_file = context["params"].get("config_file", "unknown")
     output = ti.xcom_pull(task_ids="run_migration")
     details = parse_migration_output(output)
-    send_slack_notification("SUCCESS", config_file, details=details)
+
+    # Get timing info
+    start_time = ti.start_date.strftime("%Y-%m-%d %H:%M:%S UTC") if ti.start_date else None
+    run_id = dag_run.run_id if dag_run else None
+
+    send_slack_notification(
+        "SUCCESS", config_file,
+        dag_id="mssql_pg_migration",
+        run_id=run_id,
+        start_time=start_time,
+        details=details
+    )
 
 
 def on_migration_failure(context):
     """Callback for failed migration."""
     ti = context["ti"]
+    dag_run = context["dag_run"]
     config_file = context["params"].get("config_file", "unknown")
     exception = context.get("exception")
-    error_msg = str(exception) if exception else "Unknown error"
+
+    # Build detailed error message
+    if exception:
+        error_msg = str(exception)
+        # Check for exit code in the exception
+        match = re.search(r"StatusCode['\"]?:\s*(\d+)", error_msg)
+        if match:
+            exit_code = int(match.group(1))
+            exit_desc = EXIT_CODES.get(exit_code, f"Exit code {exit_code}")
+            error_msg = f"{exit_desc} (exit code {exit_code})"
+    else:
+        error_msg = "Task failed"
+
+    # Get timing info
+    start_time = ti.start_date.strftime("%Y-%m-%d %H:%M:%S UTC") if ti.start_date else None
+    run_id = dag_run.run_id if dag_run else None
 
     details = {
         "attempt": f"{ti.try_number}/{ti.max_tries + 1}"
     }
-    send_slack_notification("FAILED", config_file, details=details, error=error_msg)
+    send_slack_notification(
+        "FAILED", config_file,
+        dag_id="mssql_pg_migration",
+        run_id=run_id,
+        start_time=start_time,
+        details=details,
+        error=error_msg
+    )
 
 
 def on_migration_retry(context):
     """Callback for migration retry."""
     ti = context["ti"]
+    dag_run = context["dag_run"]
     config_file = context["params"].get("config_file", "unknown")
     exception = context.get("exception")
-    error_msg = str(exception) if exception else "Unknown error"
+
+    # Build detailed error message
+    if exception:
+        error_msg = str(exception)
+        # Check for exit code in the exception
+        match = re.search(r"StatusCode['\"]?:\s*(\d+)", error_msg)
+        if match:
+            exit_code = int(match.group(1))
+            exit_desc = EXIT_CODES.get(exit_code, f"Exit code {exit_code}")
+            error_msg = f"{exit_desc} (exit code {exit_code})"
+    else:
+        error_msg = "Task interrupted"
+
+    # Get timing info
+    start_time = ti.start_date.strftime("%Y-%m-%d %H:%M:%S UTC") if ti.start_date else None
+    run_id = dag_run.run_id if dag_run else None
 
     # Get retry delay
     retry_delay = context.get("retry_delay", timedelta(minutes=2))
@@ -192,7 +265,14 @@ def on_migration_retry(context):
         "attempt": f"{ti.try_number}/{ti.max_tries + 1}",
         "next_retry": str(retry_delay),
     }
-    send_slack_notification("RETRYING", config_file, details=details, error=error_msg)
+    send_slack_notification(
+        "RETRYING", config_file,
+        dag_id="mssql_pg_migration",
+        run_id=run_id,
+        start_time=start_time,
+        details=details,
+        error=error_msg
+    )
 
 
 # Default arguments for all tasks
