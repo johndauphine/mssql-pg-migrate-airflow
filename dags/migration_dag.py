@@ -22,6 +22,7 @@ from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.exceptions import AirflowException, AirflowFailException
 from airflow.providers.docker.exceptions import DockerContainerFailedException
 from docker.types import Mount
+from airflow.models import Variable
 import json
 import os
 import re
@@ -60,14 +61,20 @@ DB_ENV_VARS = {
     "PG_PASSWORD": os.getenv("PG_PASSWORD", ""),
 }
 
-# Slack webhook URL for notifications
-SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
+# Slack webhook URL for notifications (encrypted in Airflow Variable)
+def get_slack_webhook_url():
+    """Get Slack webhook URL from Airflow Variable."""
+    try:
+        return Variable.get("SLACK_WEBHOOK_URL", default_var="")
+    except Exception:
+        return ""
 
 
 def send_slack_notification(status: str, config_file: str, dag_id: str = "mssql_pg_migration",
                            run_id: str = None, start_time: str = None, details: dict = None, error: str = None):
     """Send Slack notification with migration details."""
-    if not SLACK_WEBHOOK_URL:
+    webhook_url = get_slack_webhook_url()
+    if not webhook_url:
         return
 
     # Status emoji and titles
@@ -152,7 +159,7 @@ def send_slack_notification(status: str, config_file: str, dag_id: str = "mssql_
     payload = {"blocks": blocks}
 
     try:
-        response = requests.post(SLACK_WEBHOOK_URL, json=payload, timeout=10)
+        response = requests.post(webhook_url, json=payload, timeout=10)
         response.raise_for_status()
     except Exception as e:
         print(f"Failed to send Slack notification: {e}")
