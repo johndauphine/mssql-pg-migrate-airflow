@@ -14,8 +14,8 @@ x-airflow-common: &airflow-common
     # Airflow 3: Simple auth manager - allow all users as admin (dev only)
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: 'true'
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-    # Fernet key for encrypting connections/variables
-    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    # Fernet key loaded from Docker secret via command
+    AIRFLOW__CORE__FERNET_KEY_CMD: "cat /run/secrets/fernet_key"
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
@@ -33,6 +33,8 @@ x-airflow-common: &airflow-common
     - ./configs:/opt/airflow/configs
     - ./logs:/opt/airflow/logs
     - /var/run/docker.sock:/var/run/docker.sock
+  secrets:
+    - fernet_key
   user: "${AIRFLOW_UID:-50000}:0"
   group_add:
     - "1001"  # docker group
@@ -154,3 +156,7 @@ volumes:
 networks:
   default:
     name: airflow-network
+
+secrets:
+  fernet_key:
+    file: /home/johnd/.secrets/fernet_key
