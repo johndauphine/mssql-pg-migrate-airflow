@@ -160,8 +160,28 @@ def parse_migration_output(output: str) -> dict:
     total_rows = 0
 
     for line in output.split("\n"):
+        # Extract event content if line is JSON log format
+        event_content = line
+        if line.startswith("{"):
+            try:
+                log_entry = json.loads(line)
+                event_content = log_entry.get("event", "")
+                # Check JSON progress for completed status
+                if event_content.startswith("{"):
+                    try:
+                        progress = json.loads(event_content)
+                        if progress.get("phase") == "completed":
+                            details["tables"] = progress.get("tables_complete", 0)
+                            details["rows"] = progress.get("rows_transferred", 0)
+                            details["speed"] = progress.get("rows_per_second", 0)
+                            return details
+                    except json.JSONDecodeError:
+                        pass
+            except json.JSONDecodeError:
+                pass
+
         # "Migration complete: 2 tables, 1401431 rows in 2s (785105 rows/sec)"
-        match = re.search(r"Migration complete: (\d+) tables?, ([\d,]+) rows? in ([^\(]+) \((\d+) rows/sec\)", line)
+        match = re.search(r"Migration complete: (\d+) tables?, ([\d,]+) rows? in ([^\(]+) \((\d+) rows/sec\)", event_content)
         if match:
             details["tables"] = int(match.group(1))
             details["rows"] = int(match.group(2).replace(",", ""))
@@ -170,23 +190,11 @@ def parse_migration_output(output: str) -> dict:
             return details  # Found complete summary, return immediately
 
         # Parse individual table completion lines (for resume output)
-        # "Badges                         OK 1102023 rows"
-        table_match = re.search(r"\[INFO\]\s+(\w+)\s+OK\s+([\d,]+)\s+rows", line)
+        # "[INFO] Badges                         OK 1102023 rows"
+        table_match = re.search(r"\[INFO\]\s+(\w+)\s+OK\s+([\d,]+)\s+rows", event_content)
         if table_match:
             table_count += 1
             total_rows += int(table_match.group(2).replace(",", ""))
-
-        # Check JSON progress for completed status
-        if line.startswith("{"):
-            try:
-                progress = json.loads(line)
-                if progress.get("phase") == "completed":
-                    details["tables"] = progress.get("tables_complete", 0)
-                    details["rows"] = progress.get("rows_transferred", 0)
-                    details["speed"] = progress.get("rows_per_second", 0)
-                    return details
-            except json.JSONDecodeError:
-                pass
 
     # If we parsed individual tables but no summary line (resume case)
     if table_count > 0:
