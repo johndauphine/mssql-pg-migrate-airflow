@@ -1,0 +1,30 @@
+# Test health check failure - invalid host
+# Health check will fail with connection error
+
+source:
+  type: mssql
+  host: invalid-host-does-not-exist
+  port: 1433
+  database: TestDB
+  user: sa
+  password: ${MSSQL_PASSWORD}
+  schema: dbo
+  trust_server_cert: true
+
+target:
+  type: postgres
+  host: postgres-target
+  port: 5432
+  database: testdb
+  user: postgres
+  password: ${PG_PASSWORD}
+  schema: public
+  ssl_mode: disable
+
+migration:
+  workers: 2
+  chunk_size: 10000
+  target_mode: drop_recreate
+  include_tables:
+    - TestTable
+  data_dir: /state

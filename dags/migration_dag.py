@@ -324,6 +324,75 @@ def on_migration_failure(context):
     )
 
 
+def on_health_check_failure(context):
+    """Callback for failed health check."""
+    ti = context["ti"]
+    dag_run = context["dag_run"]
+    config_file = context["params"].get("config_file", "unknown")
+
+    # Get timing info
+    start_time = ti.start_date.strftime("%Y-%m-%d %H:%M:%S UTC") if ti.start_date else None
+    run_id = dag_run.run_id if dag_run else None
+
+    details = {
+        "attempt": f"{ti.try_number}/{ti.max_tries + 1}"
+    }
+    send_slack_notification(
+        "FAILED", config_file,
+        dag_id="mssql_pg_migration",
+        run_id=run_id,
+        start_time=start_time,
+        details=details,
+        error="Health check failed - database connectivity issue"
+    )
+
+
+def on_health_check_retry(context):
+    """Callback for health check retry."""
+    ti = context["ti"]
+    dag_run = context["dag_run"]
+    config_file = context["params"].get("config_file", "unknown")
+
+    # Get timing info
+    start_time = ti.start_date.strftime("%Y-%m-%d %H:%M:%S UTC") if ti.start_date else None
+    run_id = dag_run.run_id if dag_run else None
+
+    # Get retry delay
+    retry_delay = context.get("retry_delay", timedelta(minutes=2))
+
+    details = {
+        "attempt": f"{ti.try_number}/{ti.max_tries + 1}",
+        "next_retry": str(retry_delay),
+    }
+    send_slack_notification(
+        "RETRYING", config_file,
+        dag_id="mssql_pg_migration",
+        run_id=run_id,
+        start_time=start_time,
+        details=details,
+        error="Health check failed - retrying database connectivity"
+    )
+
+
+def on_task_failure(context):
+    """Generic callback for task failures."""
+    ti = context["ti"]
+    dag_run = context["dag_run"]
+    config_file = context["params"].get("config_file", "unknown")
+    task_id = ti.task_id
+
+    start_time = ti.start_date.strftime("%Y-%m-%d %H:%M:%S UTC") if ti.start_date else None
+    run_id = dag_run.run_id if dag_run else None
+
+    send_slack_notification(
+        "FAILED", config_file,
+        dag_id="mssql_pg_migration",
+        run_id=run_id,
+        start_time=start_time,
+        error=f"Task '{task_id}' failed"
+    )
+
+
 def on_migration_retry(context):
     """Callback for migration retry."""
     ti = context["ti"]
@@ -509,12 +578,15 @@ with DAG(
         do_xcom_push=True,
         mount_tmp_dir=False,
         retries=2,  # Health check can retry on transient network issues
+        on_failure_callback=on_health_check_failure,
+        on_retry_callback=on_health_check_retry,
     )
 
     # Branch based on health check
     check_health = BranchPythonOperator(
         task_id="check_health",
         python_callable=check_health_result,
+        on_failure_callback=on_task_failure,
     )
 
     # Health check failed - stop pipeline
@@ -567,6 +639,7 @@ with DAG(
         task_id="parse_results",
         python_callable=parse_migration_result,
         trigger_rule="all_done",
+        on_failure_callback=on_task_failure,
     )
 
     # Success endpoint
