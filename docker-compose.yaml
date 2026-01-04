@@ -11,6 +11,8 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
     # Airflow 3: JWT secret for component authentication
     AIRFLOW__API_AUTH__JWT_SECRET: c985b2e5b423787b932d0ecdea37b251349a8a5bea13436a476d2e36b04a8be7
+    # Airflow 3: Simple auth manager - allow all users as admin (dev only)
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: 'true'
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
