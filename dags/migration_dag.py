@@ -25,6 +25,7 @@ from docker.types import Mount
 import json
 import os
 import re
+import requests
 
 
 # mssql-pg-migrate exit codes
@@ -58,6 +59,140 @@ DB_ENV_VARS = {
     "MSSQL_PASSWORD": os.getenv("MSSQL_PASSWORD", ""),
     "PG_PASSWORD": os.getenv("PG_PASSWORD", ""),
 }
+
+# Slack webhook URL for notifications
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
+
+
+def send_slack_notification(status: str, config_file: str, details: dict = None, error: str = None):
+    """Send Slack notification with migration details."""
+    if not SLACK_WEBHOOK_URL:
+        return
+
+    # Status emoji and color
+    status_config = {
+        "SUCCESS": {"emoji": ":large_green_circle:", "color": "#36a64f"},
+        "FAILED": {"emoji": ":red_circle:", "color": "#dc3545"},
+        "RETRYING": {"emoji": ":large_yellow_circle:", "color": "#ffc107"},
+    }
+    cfg = status_config.get(status, {"emoji": ":white_circle:", "color": "#6c757d"})
+
+    # Build message blocks
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"{cfg['emoji']} Migration {status}", "emoji": True}
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Config:*\n{config_file}"},
+            ]
+        }
+    ]
+
+    # Add details for success
+    if details:
+        fields = []
+        if "tables" in details:
+            fields.append({"type": "mrkdwn", "text": f"*Tables:*\n{details['tables']}"})
+        if "rows" in details:
+            fields.append({"type": "mrkdwn", "text": f"*Rows:*\n{details['rows']:,}"})
+        if "duration" in details:
+            fields.append({"type": "mrkdwn", "text": f"*Duration:*\n{details['duration']}"})
+        if "speed" in details:
+            fields.append({"type": "mrkdwn", "text": f"*Speed:*\n{details['speed']:,} rows/sec"})
+        if "attempt" in details:
+            fields.append({"type": "mrkdwn", "text": f"*Attempt:*\n{details['attempt']}"})
+        if "next_retry" in details:
+            fields.append({"type": "mrkdwn", "text": f"*Next Retry:*\n{details['next_retry']}"})
+        if fields:
+            blocks.append({"type": "section", "fields": fields})
+
+    # Add error message
+    if error:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Error:*\n```{error}```"}
+        })
+
+    payload = {"blocks": blocks}
+
+    try:
+        response = requests.post(SLACK_WEBHOOK_URL, json=payload, timeout=10)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"Failed to send Slack notification: {e}")
+
+
+def parse_migration_output(output: str) -> dict:
+    """Parse migration output to extract details."""
+    details = {}
+    if not output:
+        return details
+
+    # Look for the final completion line
+    for line in output.split("\n"):
+        # "Migration complete: 2 tables, 1401431 rows in 2s (785105 rows/sec)"
+        match = re.search(r"Migration complete: (\d+) tables?, ([\d,]+) rows? in ([^\(]+) \((\d+) rows/sec\)", line)
+        if match:
+            details["tables"] = int(match.group(1))
+            details["rows"] = int(match.group(2).replace(",", ""))
+            details["duration"] = match.group(3).strip()
+            details["speed"] = int(match.group(4))
+            break
+
+        # Also check JSON progress for completed status
+        if line.startswith("{"):
+            try:
+                progress = json.loads(line)
+                if progress.get("phase") == "completed":
+                    details["tables"] = progress.get("tables_complete", 0)
+                    details["rows"] = progress.get("rows_transferred", 0)
+                    details["speed"] = progress.get("rows_per_second", 0)
+            except json.JSONDecodeError:
+                pass
+
+    return details
+
+
+def on_migration_success(context):
+    """Callback for successful migration."""
+    ti = context["ti"]
+    config_file = context["params"].get("config_file", "unknown")
+    output = ti.xcom_pull(task_ids="run_migration")
+    details = parse_migration_output(output)
+    send_slack_notification("SUCCESS", config_file, details=details)
+
+
+def on_migration_failure(context):
+    """Callback for failed migration."""
+    ti = context["ti"]
+    config_file = context["params"].get("config_file", "unknown")
+    exception = context.get("exception")
+    error_msg = str(exception) if exception else "Unknown error"
+
+    details = {
+        "attempt": f"{ti.try_number}/{ti.max_tries + 1}"
+    }
+    send_slack_notification("FAILED", config_file, details=details, error=error_msg)
+
+
+def on_migration_retry(context):
+    """Callback for migration retry."""
+    ti = context["ti"]
+    config_file = context["params"].get("config_file", "unknown")
+    exception = context.get("exception")
+    error_msg = str(exception) if exception else "Unknown error"
+
+    # Get retry delay
+    retry_delay = context.get("retry_delay", timedelta(minutes=2))
+
+    details = {
+        "attempt": f"{ti.try_number}/{ti.max_tries + 1}",
+        "next_retry": str(retry_delay),
+    }
+    send_slack_notification("RETRYING", config_file, details=details, error=error_msg)
 
 
 # Default arguments for all tasks
@@ -258,6 +393,9 @@ with DAG(
         mount_tmp_dir=False,
         timeout=14400,  # 4 hours
         # Retries configured in default_args (3 retries with exponential backoff)
+        on_success_callback=on_migration_success,
+        on_failure_callback=on_migration_failure,
+        on_retry_callback=on_migration_retry,
     )
 
     # Parse results

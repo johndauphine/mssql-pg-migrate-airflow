@@ -27,6 +27,8 @@ x-airflow-common: &airflow-common
     # Database credentials (passed to DockerOperator containers)
     MSSQL_PASSWORD: ${MSSQL_PASSWORD}
     PG_PASSWORD: ${PG_PASSWORD}
+    # Slack notifications (optional)
+    SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./configs:/opt/airflow/configs
