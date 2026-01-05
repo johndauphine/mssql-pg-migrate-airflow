@@ -59,6 +59,12 @@ STATE_MOUNT_PATH = os.getenv("STATE_MOUNT_PATH")
 if not STATE_MOUNT_PATH:
     raise ValueError("STATE_MOUNT_PATH environment variable must be set")
 
+# Secrets directory for file-based secrets (optional - for ${file:/run/secrets/...} syntax)
+SECRETS_MOUNT_PATH = os.getenv("SECRETS_MOUNT_PATH", "")
+
+# Docker image for mssql-pg-migrate (default or test override)
+MIGRATE_IMAGE = os.getenv("MIGRATE_IMAGE", "mssql-pg-migrate:1.24.0")
+
 # Database credentials - read from Docker secrets (not env vars for security)
 def get_secret(name: str, fallback_env: str = None) -> str:
     """Read secret from Docker secret mount, fallback to env var."""
@@ -575,26 +581,36 @@ with DAG(
 ) as dag:
 
     # Health check task - verify database connectivity
+    # Build health check mounts list
+    health_check_mounts = [
+        Mount(
+            source=CONFIG_MOUNT_PATH,
+            target="/config",
+            type="bind",
+            read_only=True,
+        ),
+        Mount(
+            source=STATE_MOUNT_PATH,
+            target="/state",
+            type="bind",
+        ),
+    ]
+    if SECRETS_MOUNT_PATH:
+        health_check_mounts.append(Mount(
+            source=SECRETS_MOUNT_PATH,
+            target="/run/secrets",
+            type="bind",
+            read_only=True,
+        ))
+
     health_check = DockerOperator(
         task_id="health_check",
-        image="mssql-pg-migrate:1.24.0",
+        image=MIGRATE_IMAGE,
         command=[
             "--config", "/config/{{ params.config_file }}",
             "health-check",
         ],
-        mounts=[
-            Mount(
-                source=CONFIG_MOUNT_PATH,
-                target="/config",
-                type="bind",
-                read_only=True,
-            ),
-            Mount(
-                source=STATE_MOUNT_PATH,
-                target="/state",
-                type="bind",
-            ),
-        ],
+        mounts=health_check_mounts,
         environment=get_db_env_vars(),
         docker_url="unix://var/run/docker.sock",
         network_mode=DATABASE_NETWORK,
@@ -619,9 +635,32 @@ with DAG(
     )
 
     # Run the actual migration (with automatic resume on retry)
+    # Build mounts list - always include config and state
+    mounts = [
+        Mount(
+            source=CONFIG_MOUNT_PATH,
+            target="/config",
+            type="bind",
+            read_only=True,
+        ),
+        Mount(
+            source=STATE_MOUNT_PATH,
+            target="/state",
+            type="bind",
+        ),
+    ]
+    # Optionally mount secrets directory for ${file:/run/secrets/...} syntax
+    if SECRETS_MOUNT_PATH:
+        mounts.append(Mount(
+            source=SECRETS_MOUNT_PATH,
+            target="/run/secrets",
+            type="bind",
+            read_only=True,
+        ))
+
     run_migration = MigrationDockerOperator(
         task_id="run_migration",
-        image="mssql-pg-migrate:1.24.0",
+        image=MIGRATE_IMAGE,
         command=[
             "--config", "/config/{{ params.config_file }}",
             "--progress",
@@ -629,19 +668,7 @@ with DAG(
             "run",
             "{% if params.dry_run %}--dry-run{% endif %}",
         ],
-        mounts=[
-            Mount(
-                source=CONFIG_MOUNT_PATH,
-                target="/config",
-                type="bind",
-                read_only=True,
-            ),
-            Mount(
-                source=STATE_MOUNT_PATH,
-                target="/state",
-                type="bind",
-            ),
-        ],
+        mounts=mounts,
         environment={
             **get_db_env_vars(),
             "DATA_DIR": "/state",  # Tell mssql-pg-migrate to use mounted state dir

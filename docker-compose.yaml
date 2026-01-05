@@ -24,7 +24,10 @@ x-airflow-common: &airflow-common
     # Mount paths for DockerOperator (passed from .env)
     CONFIG_MOUNT_PATH: ${CONFIG_MOUNT_PATH:-${PWD}/configs}
     STATE_MOUNT_PATH: ${STATE_MOUNT_PATH:-${PWD}/state}
+    SECRETS_MOUNT_PATH: ${SECRETS_MOUNT_PATH:-${HOME}/.secrets}
     DATABASE_NETWORK: ${DATABASE_NETWORK:-mssql-to-postgres-pipeline_airflow}
+    # Docker image for mssql-pg-migrate (override for testing)
+    MIGRATE_IMAGE: ${MIGRATE_IMAGE:-mssql-pg-migrate:1.24.0}
     # Database credentials loaded from Docker secrets (see secrets: section)
   volumes:
     - ./dags:/opt/airflow/dags
