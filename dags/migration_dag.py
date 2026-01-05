@@ -49,17 +49,34 @@ RECOVERABLE_CODES = {2, 5, 7, 137, 143}
 # Network where databases are running
 DATABASE_NETWORK = os.getenv("DATABASE_NETWORK", "mssql-to-postgres-pipeline_airflow")
 
-# Config mount path - override via environment variable for different hosts
-CONFIG_MOUNT_PATH = os.getenv("CONFIG_MOUNT_PATH", "/Users/john/repos/mssql-pg-migrate-airflow/configs")
+# Config mount path - must be set via environment variable (host path for DockerOperator)
+CONFIG_MOUNT_PATH = os.getenv("CONFIG_MOUNT_PATH")
+if not CONFIG_MOUNT_PATH:
+    raise ValueError("CONFIG_MOUNT_PATH environment variable must be set")
 
 # State directory for checkpoints (must be shared between retries)
-STATE_MOUNT_PATH = os.getenv("STATE_MOUNT_PATH", "/Users/john/repos/mssql-pg-migrate-airflow/state")
+STATE_MOUNT_PATH = os.getenv("STATE_MOUNT_PATH")
+if not STATE_MOUNT_PATH:
+    raise ValueError("STATE_MOUNT_PATH environment variable must be set")
 
-# Database credentials (passed to mssql-pg-migrate container for config file substitution)
-DB_ENV_VARS = {
-    "MSSQL_PASSWORD": os.getenv("MSSQL_PASSWORD", ""),
-    "PG_PASSWORD": os.getenv("PG_PASSWORD", ""),
-}
+# Database credentials - read from Docker secrets (not env vars for security)
+def get_secret(name: str, fallback_env: str = None) -> str:
+    """Read secret from Docker secret mount, fallback to env var."""
+    try:
+        with open(f"/run/secrets/{name}") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        if fallback_env:
+            return os.getenv(fallback_env, "")
+        return ""
+
+
+def get_db_env_vars() -> dict:
+    """Get database credentials from secrets."""
+    return {
+        "MSSQL_PASSWORD": get_secret("mssql_password", "MSSQL_PASSWORD"),
+        "PG_PASSWORD": get_secret("pg_password", "PG_PASSWORD"),
+    }
 
 # Slack webhook URL for notifications (encrypted in Airflow Variable)
 def get_slack_webhook_url():
@@ -578,7 +595,7 @@ with DAG(
                 type="bind",
             ),
         ],
-        environment=DB_ENV_VARS,
+        environment=get_db_env_vars(),
         docker_url="unix://var/run/docker.sock",
         network_mode=DATABASE_NETWORK,
         auto_remove="success",
@@ -626,7 +643,7 @@ with DAG(
             ),
         ],
         environment={
-            **DB_ENV_VARS,
+            **get_db_env_vars(),
             "DATA_DIR": "/state",  # Tell mssql-pg-migrate to use mounted state dir
         },
         docker_url="unix://var/run/docker.sock",

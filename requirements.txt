@@ -1,3 +1,0 @@
-# Airflow 3 provider packages
-apache-airflow-providers-docker>=3.14.0
-apache-airflow-providers-standard>=0.0.1

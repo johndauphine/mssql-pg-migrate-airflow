@@ -22,12 +22,10 @@ x-airflow-common: &airflow-common
     # Airflow 3: renamed from deactivate_stale_dags_interval
     AIRFLOW__SCHEDULER__PARSING_CLEANUP_INTERVAL: '60'
     # Mount paths for DockerOperator (passed from .env)
-    CONFIG_MOUNT_PATH: ${CONFIG_MOUNT_PATH:-/home/johnd/repos/mssql-pg-migrate-airflow/configs}
-    STATE_MOUNT_PATH: ${STATE_MOUNT_PATH:-/home/johnd/repos/mssql-pg-migrate-airflow/state}
+    CONFIG_MOUNT_PATH: ${CONFIG_MOUNT_PATH:-${PWD}/configs}
+    STATE_MOUNT_PATH: ${STATE_MOUNT_PATH:-${PWD}/state}
     DATABASE_NETWORK: ${DATABASE_NETWORK:-mssql-to-postgres-pipeline_airflow}
-    # Database credentials (passed to DockerOperator containers)
-    MSSQL_PASSWORD: ${MSSQL_PASSWORD}
-    PG_PASSWORD: ${PG_PASSWORD}
+    # Database credentials loaded from Docker secrets (see secrets: section)
   volumes:
     - ./dags:/opt/airflow/dags
     - ./configs:/opt/airflow/configs
@@ -35,6 +33,8 @@ x-airflow-common: &airflow-common
     - /var/run/docker.sock:/var/run/docker.sock
   secrets:
     - fernet_key
+    - mssql_password
+    - pg_password
   user: "${AIRFLOW_UID:-50000}:0"
   group_add:
     - "1001"  # docker group
@@ -159,4 +159,8 @@ networks:
 
 secrets:
   fernet_key:
-    file: /home/johnd/.secrets/fernet_key
+    file: ${HOME}/.secrets/fernet_key
+  mssql_password:
+    file: ${HOME}/.secrets/mssql_password
+  pg_password:
+    file: ${HOME}/.secrets/pg_password
