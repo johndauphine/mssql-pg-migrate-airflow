@@ -1,6 +1,6 @@
 # mssql-pg-migrate Airflow Pipelines
 
-Airflow DAGs for orchestrating database migrations between MSSQL and PostgreSQL using [mssql-pg-migrate](https://github.com/johndauphine/mssql-pg-migrate).
+Airflow 3 DAGs for orchestrating database migrations between MSSQL and PostgreSQL using [mssql-pg-migrate](https://github.com/johndauphine/mssql-pg-migrate).
 
 ## Features
 
@@ -9,6 +9,8 @@ Airflow DAGs for orchestrating database migrations between MSSQL and PostgreSQL 
 - **Automatic Retry with Resume**: Failed migrations automatically retry using checkpoint resume
 - **Progress Streaming**: Real-time JSON progress updates in Airflow logs
 - **Exit Code Handling**: Proper task status based on migration exit codes
+- **Slack Notifications**: Success, failure, and retry notifications
+- **Docker Secrets**: Secure credential management (not visible via `env`)
 
 ## Quick Start
 
@@ -17,21 +19,34 @@ Airflow DAGs for orchestrating database migrations between MSSQL and PostgreSQL 
 ```bash
 git clone https://github.com/johndauphine/mssql-pg-migrate-airflow.git
 cd mssql-pg-migrate-airflow
-
-# Copy environment file
-cp .env.example .env
-
-# Set your Airflow UID (Linux only)
-echo "AIRFLOW_UID=$(id -u)" >> .env
 ```
 
-### 2. Build the Migration Image
+### 2. Configure Secrets
+
+Create the secrets directory and files:
+
+```bash
+# Create secrets directory
+mkdir -p ~/.secrets
+chmod 700 ~/.secrets
+
+# Generate Fernet key for Airflow encryption
+openssl rand -base64 32 | tr -d '\n' > ~/.secrets/fernet_key
+chmod 600 ~/.secrets/fernet_key
+
+# Create database credential files
+echo -n "YourMSSQLPassword" > ~/.secrets/mssql_password
+echo -n "YourPostgresPassword" > ~/.secrets/pg_password
+chmod 600 ~/.secrets/mssql_password ~/.secrets/pg_password
+```
+
+### 3. Build the Migration Image
 
 ```bash
 docker compose --profile build-only build mssql-pg-migrate
 ```
 
-### 3. Start Airflow
+### 4. Start Airflow
 
 ```bash
 docker compose up -d
@@ -40,26 +55,24 @@ docker compose up -d
 docker compose logs -f airflow-init
 ```
 
-### 4. Access Airflow UI
+### 5. Access Airflow UI
 
-Open http://localhost:8080 and login with:
-- Username: `airflow`
-- Password: `airflow`
+Open http://localhost:8080 (Airflow 3 uses simple auth - no login required in dev mode)
 
-### 5. Configure Credentials
-
-In the Airflow UI, go to **Admin > Variables** and set:
-- `mssql_password`: Your MSSQL password
-- `pg_password`: Your PostgreSQL password
-
-### 6. Create Migration Config
+### 6. Configure Slack Notifications (Optional)
 
 ```bash
-cp configs/example-migration.yaml configs/my-migration.yaml
+docker exec <scheduler-container> airflow variables set SLACK_WEBHOOK_URL "https://hooks.slack.com/services/..."
+```
+
+### 7. Create Migration Config
+
+```bash
+cp configs/test-migration.yaml configs/my-migration.yaml
 # Edit configs/my-migration.yaml with your settings
 ```
 
-### 7. Trigger Migration
+### 8. Trigger Migration
 
 In the Airflow UI:
 1. Go to **DAGs > mssql_pg_migration**
@@ -67,7 +80,22 @@ In the Airflow UI:
 3. Set parameters:
    - `config_file`: `my-migration.yaml`
    - `dry_run`: `true` (for testing)
-   - `workers`: `8`
+
+## Secrets Architecture
+
+Database credentials are stored as Docker secrets, not environment variables:
+
+```
+~/.secrets/
+├── fernet_key       # Airflow encryption key
+├── mssql_password   # MSSQL password
+└── pg_password      # PostgreSQL password
+```
+
+**Security properties:**
+- Passwords not visible via `docker exec <container> env`
+- Not visible via `docker inspect`
+- Only mounted at `/run/secrets/` inside containers
 
 ## DAG: mssql_pg_migration
 
@@ -82,8 +110,10 @@ health_check → check_health → run_migration → parse_results → migration_
 ### Retry Behavior
 
 - **First attempt**: Runs `mssql-pg-migrate run` command
-- **Retry attempts**: Automatically uses `mssql-pg-migrate resume` to continue from last checkpoint
+- **Retry attempts**: Automatically uses `mssql-pg-migrate resume` to continue from checkpoint
 - **Retries**: 3 attempts with exponential backoff (2min → 4min → 8min)
+- **Recoverable errors**: Connection (2), Cancelled (5), I/O (7), SIGKILL (137), SIGTERM (143)
+- **Non-recoverable errors**: Config (1), Transfer (3), Validation (4), State (6) - fail immediately
 
 ### Parameters
 
@@ -95,8 +125,6 @@ health_check → check_health → run_migration → parse_results → migration_
 
 ## Exit Codes
 
-The migration tool uses standardized exit codes:
-
 | Code | Status | Recoverable | Description |
 |------|--------|-------------|-------------|
 | 0 | Success | - | Migration completed |
@@ -107,22 +135,21 @@ The migration tool uses standardized exit codes:
 | 5 | Up for Retry | Yes | Cancelled (SIGINT/SIGTERM) |
 | 6 | Failed | No | State file error |
 | 7 | Up for Retry | Yes | I/O error |
+| 137 | Up for Retry | Yes | SIGKILL (container killed) |
+| 143 | Up for Retry | Yes | SIGTERM (container stopped) |
 
-## Progress Monitoring
+## Slack Notifications
 
-The `--progress` flag streams JSON updates to stderr, visible in Airflow logs:
+When configured, Slack notifications are sent for:
+- **Success**: Tables migrated, row counts, throughput
+- **Failure**: Error details, attempt count
+- **Retry**: Next retry time, error reason
 
-```json
-{"timestamp":"2024-01-03T10:00:00Z","phase":"transfer","tables_complete":5,"tables_total":10,"rows_transferred":500000,"progress_pct":50.0,"rows_per_second":50000}
+Set the webhook URL as an encrypted Airflow Variable:
+
+```bash
+docker exec <scheduler-container> airflow variables set SLACK_WEBHOOK_URL "https://hooks.slack.com/..."
 ```
-
-**Phases:**
-- `extracting_schema` - Reading source table definitions
-- `creating_tables` - Creating target tables
-- `transfer` - Copying data
-- `finalizing` - Completing transfers
-- `validating` - Verifying row counts
-- `completed` - Migration finished
 
 ## Directory Structure
 
@@ -131,26 +158,28 @@ mssql-pg-migrate-airflow/
 ├── dags/
 │   └── migration_dag.py      # Airflow DAG definition
 ├── docker/
+│   ├── airflow/
+│   │   └── Dockerfile        # Custom Airflow image
 │   └── mssql-pg-migrate/
 │       └── Dockerfile        # Migration tool image
 ├── configs/
-│   └── example-migration.yaml
+│   └── *.yaml                # Migration configs
+├── docs/
+│   └── fernet-key-setup.md   # Detailed Fernet key docs
 ├── state/                    # Migration checkpoints (for resume)
 ├── logs/                     # Airflow logs (auto-created)
-├── docker-compose.yaml
-├── .env.example
-└── README.md
+└── docker-compose.yaml
 ```
 
 ## Environment Variables
 
-Configure paths for different hosts via environment variables:
+Configure paths via environment variables (defaults use `${PWD}`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_NETWORK` | `mssql-to-postgres-pipeline_airflow` | Docker network for database access |
-| `CONFIG_MOUNT_PATH` | `/Users/john/repos/mssql-pg-migrate-airflow/configs` | Host path to config files |
-| `STATE_MOUNT_PATH` | `/Users/john/repos/mssql-pg-migrate-airflow/state` | Host path for checkpoint state |
+| `CONFIG_MOUNT_PATH` | `${PWD}/configs` | Host path to config files |
+| `STATE_MOUNT_PATH` | `${PWD}/state` | Host path for checkpoint state |
 
 ## Customization
 
@@ -174,25 +203,10 @@ docker compose --profile build-only build mssql-pg-migrate
 
 ### Connecting to External Databases
 
-If your databases are outside the Docker network, update the network_mode in the DAG:
+If your databases are outside the Docker network, set `DATABASE_NETWORK`:
 
-```python
-DockerOperator(
-    ...
-    network_mode="host",  # Use host networking
-)
-```
-
-### Adding Email Notifications
-
-Update `default_args` in the DAG:
-
-```python
-default_args = {
-    ...
-    "email": ["your-email@example.com"],
-    "email_on_failure": True,
-}
+```bash
+DATABASE_NETWORK=host docker compose up -d
 ```
 
 ## Troubleshooting
@@ -207,10 +221,11 @@ sudo usermod -aG docker $USER
 
 ### Migration state not persisting
 
-Ensure the state directory exists:
+Ensure the state directory exists with proper permissions:
 
 ```bash
 mkdir -p state
+chmod 777 state
 ```
 
 ### Health check fails
@@ -225,6 +240,15 @@ source:
   host: your-mssql-host
   ...
 EOF
+```
+
+### Secrets not loading
+
+Verify secrets are mounted:
+
+```bash
+docker exec <scheduler-container> ls -la /run/secrets/
+docker exec <scheduler-container> cat /run/secrets/mssql_password
 ```
 
 ## License
